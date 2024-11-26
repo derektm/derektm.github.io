@@ -1,0 +1,149 @@
+Function Provisioning-New-Role {
+    <#
+        .SYNOPSIS
+            Create new RBAC role, disable inheritance, and configure access.
+
+        .PARAMETER role_name
+            The name of the group to create.
+
+        .PARAMETER role_description
+            The description of the new role.
+
+        .PARAMETER role_ad_path
+            The Active Directory path (OU) where the new group will be created.
+
+        .PARAMETER output_path
+            The log file location.
+
+        .EXAMPLE
+            Provisioning-New-Role -role_name "Role-Name" -role_description "Description" -role_ad_path "OU=Roles,DC=example,DC=com" -output_path "C:\Logs"
+    #>
+
+    [cmdletbinding(SupportsShouldProcess = $true)]
+    param (
+        [parameter(Mandatory = $true, Position = 0)]
+        [string]$role_name,
+
+        [parameter(Mandatory = $true, Position = 1)]
+        [string]$role_description,
+
+        [parameter(Mandatory = $true, Position = 2)]
+        [string]$role_ad_path,
+
+        [parameter(Mandatory = $true, Position = 3)]
+        [string]$output_path
+    )
+
+    # Core logic for creating a new group
+    Write-Output "Provisioning new role..."
+    $StopWatch = New-Object System.Diagnostics.Stopwatch
+    $StopWatch.Start()
+
+    $Notes = "RBAC Role $($role_name) provisioned by $([System.Security.Principal.WindowsIdentity]::GetCurrent().Name) on $(Get-Date)"
+
+    try {
+        if ($PSCmdlet.ShouldProcess("Creating New Role: $role_name")) {
+            $new_role = New-ADGroup -Name $role_name -GroupScope DomainLocal -GroupCategory Security -Path $role_ad_path -Description $role_description -PassThru
+            Set-ADGroup -Identity $role_name -Replace @{info = $Notes}
+
+            Write-Output "Disabling security inheritance..."
+            $role_dn = (Get-ADGroup $role_name).DistinguishedName
+            $role_entry = [ADSI]"LDAP://$role_dn"
+            $role_acl = $role_entry.ObjectSecurity
+            $role_acl.SetAccessRuleProtection($true, $false)
+
+            Write-Output "Granting permissions to Enterprise Admins and Domain Admins..."
+            $enterprise_admins = New-Object System.Security.Principal.SecurityIdentifier (Get-ADGroup "Enterprise Admins").SID
+            $domain_admins = New-Object System.Security.Principal.SecurityIdentifier (Get-ADGroup "Domain Admins").SID
+            $guidmap = Get-GUIDMap
+
+            $role_acl.AddAccessRule((New-Object System.DirectoryServices.ActiveDirectoryAccessRule $enterprise_admins, "GenericAll", "Allow", "All", $guidmap["group"]))
+            $role_acl.AddAccessRule((New-Object System.DirectoryServices.ActiveDirectoryAccessRule $domain_admins, "GenericAll", "Allow", "All", $guidmap["group"]))
+            $role_entry.CommitChanges()
+
+            Write-Output "New role created successfully: $role_name"
+        }
+    } catch {
+        Write-Error "ERROR: $_"
+    }
+
+    $StopWatch.Stop()
+    Write-Output "Time Taken: $($StopWatch.Elapsed)"
+}
+
+Function Provisioning-Existing-Role {
+    <#
+        .SYNOPSIS
+            Modify an existing RBAC role, disable inheritance, and configure access.
+
+        .PARAMETER role_name
+            The name of the existing group.
+
+        .PARAMETER role_description
+            The updated description of the role.
+
+        .PARAMETER output_path
+            The log file location.
+
+        .EXAMPLE
+            Provisioning-Existing-Role -role_name "ExistingRoleName" -role_description "Updated Description" -output_path "C:\Logs"
+    #>
+
+    [cmdletbinding(SupportsShouldProcess = $true)]
+    param (
+        [parameter(Mandatory = $true, Position = 0)]
+        [string]$role_name,
+
+        [parameter(Mandatory = $true, Position = 1)]
+        [string]$role_description,
+
+        [parameter(Mandatory = $true, Position = 2)]
+        [string]$output_path
+    )
+
+    # Core logic for modifying an existing group
+    Write-Output "Modifying existing role..."
+    $StopWatch = New-Object System.Diagnostics.Stopwatch
+    $StopWatch.Start()
+
+    $Notes = "RBAC Role $($role_name) updated by $([System.Security.Principal.WindowsIdentity]::GetCurrent().Name) on $(Get-Date)"
+
+    try {
+        if ($PSCmdlet.ShouldProcess("Modifying Existing Role: $role_name")) {
+            $existing_group = Get-ADGroup -Identity $role_name -ErrorAction Stop
+            Set-ADGroup -Identity $role_name -Description $role_description -Replace @{info = $Notes}
+
+            Write-Output "Disabling security inheritance..."
+            $role_dn = $existing_group.DistinguishedName
+            $role_entry = [ADSI]"LDAP://$role_dn"
+            $role_acl = $role_entry.ObjectSecurity
+            $role_acl.SetAccessRuleProtection($true, $false)
+
+            Write-Output "Granting permissions to Enterprise Admins and Domain Admins..."
+            $enterprise_admins = New-Object System.Security.Principal.SecurityIdentifier (Get-ADGroup "Enterprise Admins").SID
+            $domain_admins = New-Object System.Security.Principal.SecurityIdentifier (Get-ADGroup "Domain Admins").SID
+            $guidmap = Get-GUIDMap
+
+            $role_acl.AddAccessRule((New-Object System.DirectoryServices.ActiveDirectoryAccessRule $enterprise_admins, "GenericAll", "Allow", "All", $guidmap["group"]))
+            $role_acl.AddAccessRule((New-Object System.DirectoryServices.ActiveDirectoryAccessRule $domain_admins, "GenericAll", "Allow", "All", $guidmap["group"]))
+            $role_entry.CommitChanges()
+
+            Write-Output "Existing role modified successfully: $role_name"
+        }
+    } catch {
+        Write-Error "ERROR: $_"
+    }
+
+    $StopWatch.Stop()
+    Write-Output "Time Taken: $($StopWatch.Elapsed)"
+}
+
+Function Get-GUIDMap {
+    # Helper function to generate GUID map for group permissions
+    $rootdse = Get-ADRootDSE
+    $guidmap = @{}
+    Get-ADObject -SearchBase ($rootdse.SchemaNamingContext) -LDAPFilter "(schemaidguid=*)" -Properties lDAPDisplayName,schemaIDGUID | ForEach-Object {
+        $guidmap[$_.lDAPDisplayName] = [System.GUID]$_.schemaIDGUID
+    }
+    return $guidmap
+}
